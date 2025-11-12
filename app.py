@@ -55,8 +55,8 @@ def load_model():
 
 model = load_model()
 
-def preprocess_image(image: Image.Image, size: int = 224) -> np.ndarray:
-    """Enhanced preprocessing with aspect ratio preservation."""
+def preprocess_image(image: Image.Image, size: int = 224, use_imagenet: bool = True) -> np.ndarray:
+    """Enhanced preprocessing with ImageNet normalization for proper model input."""
     # Convert to RGB
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -64,65 +64,105 @@ def preprocess_image(image: Image.Image, size: int = 224) -> np.ndarray:
     # Resize maintaining aspect ratio with padding
     image.thumbnail((size, size), Image.Resampling.LANCZOS)
     
-    # Create square image with padding
+    # Create square image with padding (use black padding)
     new_image = Image.new('RGB', (size, size), (0, 0, 0))
     paste_x = (size - image.width) // 2
     paste_y = (size - image.height) // 2
     new_image.paste(image, (paste_x, paste_y))
     
-    # Convert to numpy and normalize
+    # Convert to numpy and normalize to 0-1 range
     img_array = np.array(new_image, dtype=np.float32) / 255.0
+    
+    # Apply ImageNet normalization (mean subtraction and std division)
+    if use_imagenet:
+        # ImageNet mean and std
+        imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        # Normalize: (x - mean) / std
+        img_array = (img_array - imagenet_mean) / imagenet_std
+    
     return img_array
 
-def create_augmentations(image: Image.Image) -> list[np.ndarray]:
-    """Create multiple augmented versions of the image for TTA."""
-    base = preprocess_image(image)
+def create_augmentations(image: Image.Image, use_imagenet: bool = True) -> list[np.ndarray]:
+    """Create multiple augmented versions of the image for TTA with proper preprocessing."""
+    # First, resize and pad the image (before normalization)
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    size = 224
+    image.thumbnail((size, size), Image.Resampling.LANCZOS)
+    new_image = Image.new('RGB', (size, size), (0, 0, 0))
+    paste_x = (size - image.width) // 2
+    paste_y = (size - image.height) // 2
+    new_image.paste(image, (paste_x, paste_y))
+    
+    # ImageNet normalization constants
+    imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    # Helper function to normalize
+    def normalize_img(img_arr):
+        if use_imagenet:
+            return (img_arr - imagenet_mean) / imagenet_std
+        return img_arr
+    
+    # Base image (0-1 range)
+    base_01 = np.array(new_image, dtype=np.float32) / 255.0
+    base = normalize_img(base_01)
     augmentations = [base]
     
     # Horizontal flip
-    img_hflip = Image.fromarray((base * 255).astype(np.uint8))
-    img_hflip = img_hflip.transpose(Image.FLIP_LEFT_RIGHT)
-    augmentations.append(np.array(img_hflip, dtype=np.float32) / 255.0)
+    img_hflip = new_image.transpose(Image.FLIP_LEFT_RIGHT)
+    hflip_01 = np.array(img_hflip, dtype=np.float32) / 255.0
+    augmentations.append(normalize_img(hflip_01))
     
     # Vertical flip
-    img_vflip = Image.fromarray((base * 255).astype(np.uint8))
-    img_vflip = img_vflip.transpose(Image.FLIP_TOP_BOTTOM)
-    augmentations.append(np.array(img_vflip, dtype=np.float32) / 255.0)
+    img_vflip = new_image.transpose(Image.FLIP_TOP_BOTTOM)
+    vflip_01 = np.array(img_vflip, dtype=np.float32) / 255.0
+    augmentations.append(normalize_img(vflip_01))
     
     # Both flips
-    img_both = Image.fromarray((base * 255).astype(np.uint8))
-    img_both = img_both.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.FLIP_TOP_BOTTOM)
-    augmentations.append(np.array(img_both, dtype=np.float32) / 255.0)
+    img_both = new_image.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.FLIP_TOP_BOTTOM)
+    both_01 = np.array(img_both, dtype=np.float32) / 255.0
+    augmentations.append(normalize_img(both_01))
     
     # Rotations (90, 180, 270)
-    img_pil = Image.fromarray((base * 255).astype(np.uint8))
     for angle in [90, 180, 270]:
-        img_rot = img_pil.rotate(angle, expand=False)
-        augmentations.append(np.array(img_rot, dtype=np.float32) / 255.0)
+        img_rot = new_image.rotate(angle, expand=False)
+        rot_01 = np.array(img_rot, dtype=np.float32) / 255.0
+        augmentations.append(normalize_img(rot_01))
     
     # Brightness adjustments
-    img_pil = Image.fromarray((base * 255).astype(np.uint8))
     for factor in [0.9, 1.1]:
-        enhancer = ImageEnhance.Brightness(img_pil)
+        enhancer = ImageEnhance.Brightness(new_image)
         img_bright = enhancer.enhance(factor)
-        augmentations.append(np.array(img_bright, dtype=np.float32) / 255.0)
+        bright_01 = np.array(img_bright, dtype=np.float32) / 255.0
+        augmentations.append(normalize_img(bright_01))
     
     # Contrast adjustments
     for factor in [0.9, 1.1]:
-        enhancer = ImageEnhance.Contrast(img_pil)
+        enhancer = ImageEnhance.Contrast(new_image)
         img_contrast = enhancer.enhance(factor)
-        augmentations.append(np.array(img_contrast, dtype=np.float32) / 255.0)
+        contrast_01 = np.array(img_contrast, dtype=np.float32) / 255.0
+        augmentations.append(normalize_img(contrast_01))
     
     # Saturation adjustments (for color variation)
     for factor in [0.9, 1.1]:
-        enhancer = ImageEnhance.Color(img_pil)
+        enhancer = ImageEnhance.Color(new_image)
         img_sat = enhancer.enhance(factor)
-        augmentations.append(np.array(img_sat, dtype=np.float32) / 255.0)
+        sat_01 = np.array(img_sat, dtype=np.float32) / 255.0
+        augmentations.append(normalize_img(sat_01))
     
     return augmentations
 
-def infer_with_advanced_tta(image: Image.Image) -> tuple[float, dict]:
-    """Advanced TTA with multiple augmentations and ensemble prediction."""
+def infer_with_advanced_tta(image: Image.Image, invert_output: bool = False) -> tuple[float, dict]:
+    """Advanced TTA with multiple augmentations and ensemble prediction.
+    
+    Args:
+        image: Input image to process
+        invert_output: If True, invert the output (1 - prediction). 
+                      Use this if model outputs vegetation probability instead of deforestation.
+    """
     # Create all augmentations
     augmentations = create_augmentations(image)
     
@@ -136,6 +176,10 @@ def infer_with_advanced_tta(image: Image.Image) -> tuple[float, dict]:
         outputs = model(batch_array)["output_0"].numpy().flatten()
         all_predictions.extend(outputs.tolist())
     
+    # Invert if needed (if model outputs vegetation probability)
+    if invert_output:
+        all_predictions = [1.0 - p for p in all_predictions]
+    
     # Calculate statistics
     mean_pred = float(np.mean(all_predictions))
     median_pred = float(np.median(all_predictions))
@@ -147,8 +191,9 @@ def infer_with_advanced_tta(image: Image.Image) -> tuple[float, dict]:
     weights = [2.0] + [1.0] * (len(all_predictions) - 1)  # Original gets 2x weight
     weighted_mean = float(np.average(all_predictions, weights=weights))
     
-    # Confidence score (inverse of std, normalized)
-    confidence = max(0.0, min(1.0, 1.0 - std_pred * 2))
+    # Confidence score (inverse of std, normalized) - higher std = lower confidence
+    # Normalize std to 0-1 range (assuming std is typically 0-0.5)
+    confidence = max(0.0, min(1.0, 1.0 - (std_pred / 0.25)))
     
     stats = {
         'mean': mean_pred,
@@ -159,7 +204,8 @@ def infer_with_advanced_tta(image: Image.Image) -> tuple[float, dict]:
         'max': max_pred,
         'confidence': confidence,
         'num_augmentations': len(all_predictions),
-        'all_predictions': all_predictions
+        'all_predictions': all_predictions,
+        'range': max_pred - min_pred  # Add range for debugging
     }
     
     # Use weighted mean as primary prediction
@@ -182,17 +228,33 @@ with st.container():
             st.markdown('<div class="image-card">', unsafe_allow_html=True)
             st.image(img, caption="Original image", use_column_width=True)
             
-            # Show preprocessed version
-            preprocessed = preprocess_image(img)
-            preprocessed_display = Image.fromarray((preprocessed * 255).astype(np.uint8))
-            st.image(preprocessed_display, caption="Preprocessed 224×224 (with padding)", use_column_width=True)
+            # Show preprocessed version (for display, show before ImageNet normalization)
+            size = 224
+            display_img = img.copy()
+            display_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+            display_new = Image.new('RGB', (size, size), (0, 0, 0))
+            paste_x = (size - display_img.width) // 2
+            paste_y = (size - display_img.height) // 2
+            display_new.paste(display_img, (paste_x, paste_y))
+            st.image(display_new, caption="Preprocessed 224×224 (with padding, before ImageNet normalization)", use_column_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
     with info_col:
         st.subheader("🎯 Prediction Results")
         if uploaded:
             with st.spinner("Running advanced ensemble inference with multiple augmentations..."):
-                probability, stats = infer_with_advanced_tta(img)
+                # Try with inverted output first (model might output vegetation probability)
+                # If model outputs vegetation prob, then deforestation = 1 - vegetation
+                probability, stats = infer_with_advanced_tta(img, invert_output=True)
+                
+                # Check if variance is too low - if so, the model might not be working correctly
+                if stats['std'] < 0.005:  # Very low variance threshold
+                    st.error(
+                        f"⚠️ **Model Output Issue Detected:** "
+                        f"Prediction variance is extremely low (std: {stats['std']:.4f}). "
+                        f"The model is producing nearly identical predictions for all inputs, "
+                        f"which suggests it may not be properly trained or needs different preprocessing."
+                    )
 
             st.markdown('<div class="result-card">', unsafe_allow_html=True)
             
@@ -217,24 +279,64 @@ with st.container():
             st.markdown("---")
             
             # Detailed statistics
-            with st.expander("📊 Detailed Statistics", expanded=False):
+            with st.expander("📊 Detailed Statistics", expanded=True):
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Mean", f"{stats['mean']:.3f}")
-                    st.metric("Median", f"{stats['median']:.3f}")
+                    st.metric("Mean", f"{stats['mean']:.4f}")
+                    st.metric("Median", f"{stats['median']:.4f}")
+                    st.metric("Range", f"{stats.get('range', stats['max'] - stats['min']):.4f}")
                 with col2:
-                    st.metric("Min", f"{stats['min']:.3f}")
-                    st.metric("Max", f"{stats['max']:.3f}")
+                    st.metric("Min", f"{stats['min']:.4f}")
+                    st.metric("Max", f"{stats['max']:.4f}")
+                    st.metric("Std Dev", f"{stats['std']:.4f}")
                 with col3:
-                    st.metric("Std Dev", f"{stats['std']:.3f}")
                     st.metric("Augmentations", f"{stats['num_augmentations']}")
+                    st.metric("Weighted Mean", f"{stats['weighted_mean']:.4f}")
+                    # Show prediction variance indicator
+                    pred_range = stats['max'] - stats['min']
+                    if pred_range < 0.01:
+                        st.warning("⚠️ Low variance")
+                    elif pred_range < 0.05:
+                        st.info("ℹ️ Moderate variance")
+                    else:
+                        st.success("✅ Good variance")
             
             # Prediction distribution
             st.markdown("**Prediction Distribution Across Augmentations:**")
-            # Create visualization as dictionary for bar chart
+            # Create visualization as dictionary for line chart
             pred_dict = {f'A{i+1}': pred for i, pred in enumerate(stats['all_predictions'])}
             st.line_chart(pred_dict, height=200)
-            st.caption(f"Range: {stats['min']:.3f} - {stats['max']:.3f} | Mean: {stats['mean']:.3f} | Std: {stats['std']:.3f}")
+            st.caption(
+                f"Range: {stats['min']:.4f} - {stats['max']:.4f} | "
+                f"Mean: {stats['mean']:.4f} | Std: {stats['std']:.4f} | "
+                f"Prediction Spread: {stats['max'] - stats['min']:.4f}"
+            )
+            
+            # Debug info - check prediction variance
+            pred_range = stats['max'] - stats['min']
+            if pred_range < 0.01:
+                st.error(
+                    f"⚠️ **Critical Issue: Low Prediction Variance!**\n\n"
+                    f"The model is producing nearly identical predictions across all {stats['num_augmentations']} augmentations:\n"
+                    f"- Min: {stats['min']:.4f}\n"
+                    f"- Max: {stats['max']:.4f}\n"
+                    f"- Range: {pred_range:.4f} (only {pred_range*100:.2f}% variation)\n"
+                    f"- Std Dev: {stats['std']:.4f}\n\n"
+                    f"**This indicates the model is not differentiating between images.**\n\n"
+                    f"**Possible causes:**\n"
+                    f"1. Model may not be properly trained\n"
+                    f"2. Model architecture issue\n"
+                    f"3. Model expects different preprocessing\n"
+                    f"4. Model outputs vegetation probability (inverted) - currently inverting output\n\n"
+                    f"**Current fix:** Output is inverted (assuming model outputs vegetation prob). "
+                    f"If predictions still don't vary, the model may need retraining."
+                )
+            elif pred_range < 0.05:
+                st.warning(
+                    f"⚠️ **Low prediction variance detected** (range: {pred_range:.4f}). "
+                    f"Predictions are similar across augmentations, which may indicate the model "
+                    f"needs better training or different preprocessing."
+                )
             
             st.markdown(
                 f"""
