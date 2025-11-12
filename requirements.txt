@@ -1,0 +1,4 @@
+tensorflow==2.16.1
+streamlit
+pillow
+numpy
